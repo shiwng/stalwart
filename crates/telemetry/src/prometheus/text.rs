@@ -132,6 +132,20 @@ pub fn write_prometheus(out: &mut Vec<u8>, format: PromFormat, is_enterprise: bo
         out.push(b'\n');
     }
 
+    // The build as a label on one sample, so a dashboard can say which version a series came
+    // from. One line of output, and nothing to compute per request.
+    write_metadata(
+        out,
+        om,
+        "stalwart_build_info",
+        FamilyType::Gauge,
+        "",
+        "The Stalwart build serving these metrics.",
+    );
+    out.extend_from_slice(b"stalwart_build_info{version=\"");
+    out.extend_from_slice(env!("CARGO_PKG_VERSION").as_bytes());
+    out.extend_from_slice(b"\"} 1\n");
+
     if om {
         out.extend_from_slice(EOF_MARKER);
     }
@@ -201,5 +215,29 @@ pub fn write_escaped(out: &mut Vec<u8>, mut text: &[u8], escape_quotes: bool) {
             _ => b"\\\\",
         });
         text = tail;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(format: PromFormat) -> String {
+        let mut out = Vec::new();
+        write_prometheus(&mut out, format, false);
+        String::from_utf8(out).expect("the exposition is text")
+    }
+
+    #[test]
+    fn build_info_carries_the_version_and_stays_inside_the_body() {
+        let text = render(PromFormat::Text100);
+        let info = format!("stalwart_build_info{{version=\"{}\"}} 1", env!("CARGO_PKG_VERSION"));
+        assert!(text.contains(&format!("# TYPE stalwart_build_info gauge\n{info}\n")), "{text}");
+
+        // OpenMetrics ends at # EOF, so the sample has to land before the marker.
+        let open = render(PromFormat::OpenMetrics100);
+        let at = open.find(&info).expect("the sample is present");
+        let end = open.find("# EOF").expect("the marker is present");
+        assert!(at < end, "the sample lands before the marker");
     }
 }
